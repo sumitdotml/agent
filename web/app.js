@@ -144,18 +144,32 @@ Marketing Team`;
      * Handle each progressive SSE event with appropriate animations
      */
     async handleProgressiveEvent(event, onComplete) {
+        // Keep iteration tracking in sync even if some events arrive without `iteration_start`
+        if (event && event.iteration !== undefined && event.iteration !== null) {
+            const iter = Number(event.iteration);
+            if (Number.isFinite(iter)) {
+                this.currentIteration = iter;
+            }
+        }
+
         switch (event.type) {
             case 'start':
                 await this.addStatusAnimated('Processing email...', 'completed');
                 break;
 
             case 'iteration_start':
-                this.currentIteration = event.iteration;
                 this.updateProgressPanel(event.iteration, 'Analyzing...', null);
-                await this.addStatusAnimated(`--- Iteration ${event.iteration} ---`, 'active', 'iteration-marker');
+                // Add a persistent iteration marker, then a separate active status that can be updated
+                await this.addStatusAnimated(`--- Iteration ${event.iteration} ---`, 'completed', 'iteration-marker');
+                await this.addStatusAnimated('Analyzing email...', 'active');
                 // Clear previous issues for new iteration (fresh check)
                 this.issues = [];
                 this.elements.issuesList.innerHTML = '';
+                // Clear policies for new iteration
+                this.policies = [];
+                this.elements.policyTabs.innerHTML = '';
+                this.elements.policyContent.textContent = '';
+                this.hideSection('policySection');
                 // Add to history
                 this.addHistoryEntry(event.iteration, 'starting', 'Starting analysis...');
                 break;
@@ -214,12 +228,27 @@ Marketing Team`;
                     event.pass ? 'pass' : 'issues',
                     event.pass ? 'Passed all checks' : `${event.issues_count} issue(s) found`
                 );
+
+                // Load and display relevant policies for this iteration when it fails
+                if (!event.pass && this.issues.length > 0) {
+                    await this.addStatusAnimated('Loading relevant policies...', 'active');
+                    await this.loadPoliciesForCurrentIssues();
+                    await this.updateLastStatusAnimated('Relevant policies loaded', 'completed');
+                }
                 break;
 
             case 'policy_loaded':
                 await this.addStatusAnimated('Policy reference loaded', 'completed');
                 // Fetch and display the policy progressively
-                await this.loadPoliciesForCurrentIssues();
+                if (this.policies.length === 0) {
+                    await this.loadPoliciesForCurrentIssues();
+                }
+                break;
+
+            case 'feedback':
+                if (event.text) {
+                    await this.addStatusAnimated(`Feedback: ${event.text}`, 'warning');
+                }
                 break;
 
             case 'redaction_started':
@@ -264,8 +293,8 @@ Marketing Team`;
                 if (event.final_email) {
                     onComplete(event.final_email);
                 }
-                if (event.iteration) {
-                    this.currentIteration = event.iteration;
+                if (event.iteration !== undefined && event.iteration !== null) {
+                    this.currentIteration = Number(event.iteration);
                 }
                 this.updateProgressPanel(this.currentIteration, 'Complete!', 0, 'complete');
                 await this.addStatusAnimated(`Review complete! (${this.currentIteration} iteration${this.currentIteration > 1 ? 's' : ''})`, 'completed');
@@ -289,7 +318,7 @@ Marketing Team`;
      */
     updateProgressPanel(iteration, status, issueCount, statusClass = '') {
         // Update iteration number
-        this.elements.currentIter.textContent = iteration || 1;
+        this.elements.currentIter.textContent = String(iteration ?? 1);
 
         // Update progress bar (percentage based on iteration)
         const percentage = Math.min((iteration / this.maxIterations) * 100, 100);
@@ -500,7 +529,9 @@ Marketing Team`;
     showFinalResult(emailText, passed, finalIteration = null) {
         this.showSection('resultSection');
 
-        const iterInfo = finalIteration ? ` (Iteration ${finalIteration})` : '';
+        const iterInfo = (finalIteration !== null && finalIteration !== undefined)
+            ? ` (Iteration ${finalIteration})`
+            : '';
 
         if (passed) {
             this.elements.resultTitle.textContent = `Compliant Email${iterInfo}`;

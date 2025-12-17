@@ -1,7 +1,7 @@
 [project]
-name = "building-an-agent"
+name = "outbound-email-guard"
 version = "0.1.0"
-description = "Add your description here"
+description = "reviews outbound emails for compliance issues and iteratively rewrites them until they pass"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

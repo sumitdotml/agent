@@ -91,7 +91,11 @@ const API = {
     async runAgentStream(emailText, onEvent) {
         const response = await fetch(`${this.BASE_URL}/run-agent`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'text/event-stream',
+            },
+            cache: 'no-cache',
             body: JSON.stringify({ email_text: emailText }),
         });
 
@@ -99,33 +103,71 @@ const API = {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
 
+        if (!response.body) {
+            throw new Error('Streaming not supported in this browser (no response body)');
+        }
+
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
 
+        const processBuffer = async () => {
+            // Normalize CRLF to LF so we can reliably split on "\n\n"
+            buffer = buffer.replace(/\r\n/g, '\n');
+
+            // Process complete SSE events (separated by a blank line)
+            while (true) {
+                const boundaryIdx = buffer.indexOf('\n\n');
+                if (boundaryIdx === -1) break;
+
+                const rawEvent = buffer.slice(0, boundaryIdx);
+                buffer = buffer.slice(boundaryIdx + 2);
+
+                const lines = rawEvent.split('\n');
+                let eventType = null;
+                const dataLines = [];
+
+                for (const line of lines) {
+                    if (!line) continue;
+                    if (line.startsWith(':')) continue; // comment/heartbeat
+
+                    if (line.startsWith('event:')) {
+                        eventType = line.slice(6).trim();
+                        continue;
+                    }
+
+                    if (line.startsWith('data:')) {
+                        // Per SSE spec, a single event's data can span multiple data: lines.
+                        dataLines.push(line.slice(5).trimStart());
+                    }
+                }
+
+                if (dataLines.length === 0) continue;
+
+                const dataText = dataLines.join('\n');
+                try {
+                    const data = JSON.parse(dataText);
+                    if (eventType && data && typeof data === 'object' && data.type === undefined) {
+                        data.type = eventType;
+                    }
+                    // IMPORTANT: Await the callback so UI updates before reading next event
+                    await onEvent(data);
+                } catch (e) {
+                    console.error('Failed to parse SSE event data:', e, { eventType, dataText });
+                }
+            }
+        };
+
         while (true) {
             const { done, value } = await reader.read();
-
             if (done) break;
 
             buffer += decoder.decode(value, { stream: true });
-
-            // Process complete SSE messages
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || ''; // Keep incomplete line in buffer
-
-            for (const line of lines) {
-                if (line.startsWith('data: ')) {
-                    try {
-                        const data = JSON.parse(line.slice(6));
-                        // IMPORTANT: Await the callback so UI updates before reading next event
-                        await onEvent(data);
-                    } catch (e) {
-                        console.error('Failed to parse SSE data:', e);
-                    }
-                }
-            }
+            await processBuffer();
         }
+
+        buffer += decoder.decode();
+        await processBuffer();
     },
 
     /**

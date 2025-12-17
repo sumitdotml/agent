@@ -8,6 +8,7 @@ for real-time agent execution updates.
 import os
 import json
 import asyncio
+from collections.abc import Mapping
 from typing import Optional
 from pathlib import Path
 
@@ -155,6 +156,40 @@ async def api_run_agent_stream(request: AgentRunRequest):
     Returns real-time updates as the agent executes with granular progressive events.
     """
     async def generate_events():
+        def sse(data: dict) -> str:
+            return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+        def _coerce_int(value, default: int = 0) -> int:
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str):
+                try:
+                    return int(value)
+                except ValueError:
+                    return default
+            return default
+
+        def _extract_last_tool_call(hist: list) -> tuple[Optional[str], dict]:
+            """
+            Try to recover the last tool call metadata from history.
+            tool_node appends: assistant(JSON tool call) then tool(result).
+            """
+            if len(hist) < 2:
+                return None, {}
+            prev = hist[-2]
+            if not isinstance(prev, Mapping) or prev.get("role") != "assistant":
+                return None, {}
+            raw = prev.get("content", "")
+            if not isinstance(raw, str) or not raw:
+                return None, {}
+            try:
+                action = json.loads(raw)
+            except json.JSONDecodeError:
+                return None, {}
+            if not isinstance(action, Mapping) or action.get("type") != "tool":
+                return None, {}
+            return action.get("name"), action.get("input") or {}
+
         state: AgentState = {
             "goal": request.goal,
             "email_draft": request.email_text,
@@ -162,161 +197,312 @@ async def api_run_agent_stream(request: AgentRunRequest):
             "action": None,
             "final": None,
             "iteration": 0,
+            "step": 0,
         }
 
-        current_iteration = 0
+        # Track "iteration" as compliance cycles (each compliance check == 1 iteration)
+        current_cycle = 0
+        cycle_count = 0
+
+        def current_iter_for_ui() -> int:
+            return current_cycle if current_cycle > 0 else 1
 
         # Send initial event
         print(f"[SSE] Starting agent stream")
-        yield f"data: {json.dumps({'type': 'start', 'goal': request.goal})}\n\n"
+        yield sse({"type": "start", "goal": request.goal})
         await asyncio.sleep(0.1)
 
         try:
             for update in agent_app.stream(state, stream_mode="updates"):
                 for node_name, payload in update.items():
 
-                    if node_name == "think":
-                        action = payload.get("action") if isinstance(payload, dict) else None
-                        iteration = payload.get("iteration", 0)
-                        if iteration > 0:
-                            current_iteration = iteration
+                    if not isinstance(payload, Mapping):
+                        continue
 
-                        if isinstance(action, dict):
-                            print(f"[SSE] Think node - Iteration {iteration}, Action: {action.get('type')}")
+                    # ----------------------------
+                    # Finalize (robust to node name)
+                    # ----------------------------
+                    if payload.get("final"):
+                        final = payload.get("final")
+                        print(f"[SSE] Finalize node ({node_name}) - completed at iteration {current_iter_for_ui()}")
+                        yield sse({"type": "final_check", "iteration": current_iter_for_ui()})
+                        await asyncio.sleep(0.2)
+                        yield sse({"type": "complete", "final_email": final, "iteration": current_iter_for_ui()})
+                        await asyncio.sleep(0.1)
+                        continue
 
-                            # Send iteration start event
-                            yield f"data: {json.dumps({'type': 'iteration_start', 'iteration': current_iteration})}\n\n"
-                            await asyncio.sleep(0.2)
+                    # ----------------------------
+                    # Think / decision (robust to node name)
+                    # ----------------------------
+                    if "action" in payload:
+                        action = payload.get("action")
+                        if isinstance(action, Mapping):
+                            action_type = action.get("type")
+                            tool_name = action.get("name") if action_type == "tool" else None
+                            if action_type == "tool" and tool_name == "check_compliance":
+                                cycle_count += 1
+                                current_cycle = cycle_count
+                                yield sse({"type": "iteration_start", "iteration": current_cycle})
+                                await asyncio.sleep(0.05)
 
-                            # Send thinking event
-                            yield f"data: {json.dumps({'type': 'thinking', 'thought': action.get('thought_summary', ''), 'iteration': current_iteration})}\n\n"
-                            await asyncio.sleep(0.3)
+                            print(
+                                f"[SSE] Think node ({node_name}) - Cycle {current_iter_for_ui()}, Action: {action_type}"
+                            )
 
-                            if action.get("type") == "tool":
-                                # Send tool selection event
-                                yield f"data: {json.dumps({'type': 'tool_selected', 'tool_name': action.get('name', ''), 'tool_input': action.get('input', {}), 'iteration': current_iteration})}\n\n"
-                                await asyncio.sleep(0.2)
-                            elif action.get("type") == "rewrite":
-                                yield f"data: {json.dumps({'type': 'rewrite_start', 'iteration': current_iteration})}\n\n"
-                                await asyncio.sleep(0.2)
-                            elif action.get("type") == "final":
-                                yield f"data: {json.dumps({'type': 'finalizing', 'iteration': current_iteration})}\n\n"
-                                await asyncio.sleep(0.2)
+                            yield sse(
+                                {
+                                    "type": "thinking",
+                                    "thought": action.get("thought_summary", ""),
+                                    "iteration": current_iter_for_ui(),
+                                }
+                            )
+                            await asyncio.sleep(0.05)
 
-                    elif node_name == "tool":
-                        hist = payload.get("history") if isinstance(payload, dict) else None
-                        if isinstance(hist, list) and hist:
-                            last = hist[-1]
-                            if last.get("role") == "tool":
-                                content = last.get("content", "")
-                                print(f"[SSE] Tool node - content preview: {content[:100]}")
+                            if action_type == "tool":
+                                yield sse(
+                                    {
+                                        "type": "tool_selected",
+                                        "tool_name": tool_name or "",
+                                        "tool_input": action.get("input", {}),
+                                        "iteration": current_iter_for_ui(),
+                                    }
+                                )
+                                await asyncio.sleep(0.05)
+                            elif action_type == "rewrite":
+                                yield sse({"type": "rewrite_start", "iteration": current_iter_for_ui()})
+                                await asyncio.sleep(0.05)
+                            elif action_type == "final":
+                                yield sse({"type": "finalizing", "iteration": current_iter_for_ui()})
+                                await asyncio.sleep(0.05)
+                        continue
 
-                                # Send tool executing event first
-                                yield f"data: {json.dumps({'type': 'tool_executing'})}\n\n"
-                                await asyncio.sleep(0.4)
+                    # ----------------------------
+                    # Tool update vs rewrite update (both include history)
+                    # ----------------------------
+                    hist = payload.get("history")
+                    if isinstance(hist, list) and hist:
+                        last = hist[-1]
+                        last_role = last.get("role") if isinstance(last, Mapping) else None
 
-                                # Try to parse compliance check result and stream issues individually
-                                if "returned:" in content:
-                                    try:
-                                        result_part = content.split("returned:", 1)[1].strip()
-                                        result_json = json.loads(result_part)
+                        # Tool node updates always end with the tool result.
+                        if last_role == "tool":
+                            content = last.get("content", "") if isinstance(last, Mapping) else ""
+                            if not isinstance(content, str):
+                                content = str(content)
 
-                                        if "pass" in result_json:
-                                            issues = result_json.get("issues", [])
-                                            passed = result_json["pass"]
-                                            print(f"[SSE] Compliance check - Pass: {passed}, Issues: {len(issues)}")
+                            tool_name, tool_input = _extract_last_tool_call(hist)
+                            if not tool_name and " returned:" in content:
+                                tool_name = content.split(" returned:", 1)[0].strip()
 
-                                            # Send compliance check started
-                                            yield f"data: {json.dumps({'type': 'compliance_check_started', 'checking': True})}\n\n"
-                                            await asyncio.sleep(0.5)
+                            print(f"[SSE] Tool node ({node_name}) - {tool_name or 'unknown'} preview: {content[:100]}")
 
-                                            if issues:
-                                                # Stream each issue individually with delay
-                                                yield f"data: {json.dumps({'type': 'issues_found', 'total_count': len(issues)})}\n\n"
-                                                await asyncio.sleep(0.3)
+                            yield sse(
+                                {
+                                    "type": "tool_executing",
+                                    "iteration": current_iter_for_ui(),
+                                    "tool_name": tool_name,
+                                }
+                            )
+                            await asyncio.sleep(0.05)
 
-                                                for idx, issue in enumerate(issues):
-                                                    severity = issue.get("severity", "medium")
-                                                    issue_data = {
-                                                        "type": issue.get("type", "unknown"),
-                                                        "severity": "critical" if severity in ["critical", "high"] else "warning",
-                                                        "title": f"{issue.get('type', 'Unknown').upper()} Issue",
-                                                        "description": issue.get("description", ""),
-                                                        "category": issue.get("type", "unknown")
-                                                    }
-                                                    print(f"[SSE] Sending issue {idx+1}/{len(issues)}: {issue_data['title']}")
-                                                    yield f"data: {json.dumps({'type': 'issue', 'issue': issue_data, 'index': idx, 'total': len(issues)})}\n\n"
-                                                    await asyncio.sleep(0.4)  # Longer delay between each issue
+                            if "returned:" not in content:
+                                yield sse(
+                                    {
+                                        "type": "tool_result",
+                                        "iteration": current_iter_for_ui(),
+                                        "tool_name": tool_name,
+                                        "result": content[:300],
+                                    }
+                                )
+                                await asyncio.sleep(0.05)
+                                continue
 
-                                                # Send summary after all issues
-                                                yield f"data: {json.dumps({'type': 'compliance_result', 'pass': passed, 'issues_count': len(issues), 'summary': result_json.get('summary', ''), 'iteration': current_iteration})}\n\n"
-                                            else:
-                                                # No issues found
-                                                yield f"data: {json.dumps({'type': 'compliance_result', 'pass': passed, 'issues_count': 0, 'summary': 'No issues found', 'iteration': current_iteration})}\n\n"
-                                            await asyncio.sleep(0.3)
+                            result_part = content.split("returned:", 1)[1].strip()
 
-                                        elif "redacted_text" in result_json:
-                                            # Redaction result
-                                            redactions = result_json.get("redactions_made", [])
-                                            yield f"data: {json.dumps({'type': 'redaction_started'})}\n\n"
-                                            await asyncio.sleep(0.2)
+                            # Tool-specific handling
+                            if tool_name == "get_policy":
+                                # Raw markdown policy text
+                                title = None
+                                for line in result_part.splitlines():
+                                    if line.startswith("# "):
+                                        title = line[2:].strip()
+                                        break
+                                yield sse(
+                                    {
+                                        "type": "policy_loaded",
+                                        "iteration": current_iter_for_ui(),
+                                        "category": (tool_input or {}).get("category"),
+                                        "title": title,
+                                        "preview": result_part[:400],
+                                    }
+                                )
+                                await asyncio.sleep(0.05)
+                                continue
 
-                                            for idx, redaction in enumerate(redactions):
-                                                yield f"data: {json.dumps({'type': 'redaction_item', 'item': redaction, 'index': idx, 'total': len(redactions)})}\n\n"
-                                                await asyncio.sleep(0.15)
+                            # JSON-ish tools
+                            try:
+                                result_json = json.loads(result_part)
+                            except json.JSONDecodeError:
+                                yield sse(
+                                    {
+                                        "type": "tool_result",
+                                        "iteration": current_iter_for_ui(),
+                                        "tool_name": tool_name,
+                                        "result": content[:300],
+                                    }
+                                )
+                                await asyncio.sleep(0.05)
+                                continue
 
-                                            yield f"data: {json.dumps({'type': 'redaction_complete', 'count': len(redactions), 'redacted_text': result_json.get('redacted_text', '')[:200]})}\n\n"
-                                            await asyncio.sleep(0.1)
+                            if "pass" in result_json:
+                                issues = result_json.get("issues", []) or []
+                                passed = bool(result_json.get("pass"))
+                                print(f"[SSE] Compliance check - Pass: {passed}, Issues: {len(issues)}")
 
-                                        else:
-                                            # Policy fetch or other tool result
-                                            yield f"data: {json.dumps({'type': 'tool_result', 'result': content[:300]})}\n\n"
+                                yield sse({"type": "compliance_check_started", "iteration": current_iter_for_ui()})
+                                await asyncio.sleep(0.05)
 
-                                    except json.JSONDecodeError:
-                                        # Not JSON, treat as policy text
-                                        if "Policy:" in content:
-                                            # Extract policy category from content
-                                            yield f"data: {json.dumps({'type': 'policy_loaded', 'preview': content[:200]})}\n\n"
-                                        else:
-                                            yield f"data: {json.dumps({'type': 'tool_result', 'result': content[:300]})}\n\n"
-                                else:
-                                    # Generic tool result
-                                    yield f"data: {json.dumps({'type': 'tool_result', 'result': content[:300]})}\n\n"
+                                if issues:
+                                    yield sse(
+                                        {
+                                            "type": "issues_found",
+                                            "iteration": current_iter_for_ui(),
+                                            "total_count": len(issues),
+                                        }
+                                    )
+                                    await asyncio.sleep(0.05)
 
-                                await asyncio.sleep(0.1)
+                                    for idx, issue in enumerate(issues):
+                                        if not isinstance(issue, Mapping):
+                                            continue
+                                        severity = issue.get("severity", "medium")
+                                        issue_type = issue.get("type", "unknown")
+                                        issue_data = {
+                                            "type": issue_type,
+                                            "severity": "critical"
+                                            if severity in ["critical", "high"]
+                                            else "warning",
+                                            "title": f"{str(issue_type).upper()} Issue",
+                                            "description": issue.get("description", ""),
+                                            "category": issue_type,
+                                        }
+                                        print(f"[SSE] Sending issue {idx+1}/{len(issues)}: {issue_data['title']}")
+                                        yield sse(
+                                            {
+                                                "type": "issue",
+                                                "iteration": current_iter_for_ui(),
+                                                "issue": issue_data,
+                                                "index": idx,
+                                                "total": len(issues),
+                                            }
+                                        )
+                                        await asyncio.sleep(0.05)
 
-                    elif node_name == "rewrite":
-                        email_draft = payload.get("email_draft") if isinstance(payload, dict) else None
-                        if email_draft:
-                            print(f"[SSE] Rewrite node - new draft preview: {email_draft[:80]}...")
-                            # Send rewrite in progress
-                            yield f"data: {json.dumps({'type': 'rewriting', 'iteration': current_iteration})}\n\n"
-                            await asyncio.sleep(0.5)
+                                yield sse(
+                                    {
+                                        "type": "compliance_result",
+                                        "iteration": current_iter_for_ui(),
+                                        "pass": passed,
+                                        "issues_count": len(issues),
+                                        "summary": result_json.get("summary", ""),
+                                    }
+                                )
+                                await asyncio.sleep(0.05)
 
-                            # Send rewrite complete with preview
-                            yield f"data: {json.dumps({'type': 'rewrite_complete', 'preview': email_draft[:300], 'full_text': email_draft, 'iteration': current_iteration})}\n\n"
-                            await asyncio.sleep(0.3)
+                                if not passed and issues:
+                                    feedback_map = {
+                                        "pii": "Remove/redact any third-party PII (emails, phones, SSNs, account numbers).",
+                                        "marketing": "Add clear unsubscribe instructions and avoid pressure tactics or misleading urgency.",
+                                        "legal": "Soften absolute claims/guarantees and add appropriate disclaimers for advice.",
+                                        "confidentiality": "Remove internal-only markers and references to internal tools/projects.",
+                                    }
+                                    categories = sorted(
+                                        {str(i.get("type")) for i in issues if isinstance(i, Mapping) and i.get("type")}
+                                    )
+                                    suggestions = [feedback_map.get(c) for c in categories if feedback_map.get(c)]
+                                    if suggestions:
+                                        yield sse(
+                                            {
+                                                "type": "feedback",
+                                                "iteration": current_iter_for_ui(),
+                                                "categories": categories,
+                                                "text": " ".join(suggestions),
+                                            }
+                                        )
+                                        await asyncio.sleep(0.05)
 
-                    elif node_name == "finalize":
-                        final = payload.get("final") if isinstance(payload, dict) else None
-                        if final:
-                            print(f"[SSE] Finalize node - completed at iteration {current_iteration}")
-                            yield f"data: {json.dumps({'type': 'final_check', 'iteration': current_iteration})}\n\n"
-                            await asyncio.sleep(0.4)
-                            yield f"data: {json.dumps({'type': 'complete', 'final_email': final, 'iteration': current_iteration})}\n\n"
-                            await asyncio.sleep(0.2)
+                                continue
+
+                            if "redacted_text" in result_json:
+                                redactions = result_json.get("redactions_made", []) or []
+                                yield sse({"type": "redaction_started", "iteration": current_iter_for_ui()})
+                                await asyncio.sleep(0.05)
+
+                                for idx, redaction in enumerate(redactions):
+                                    yield sse(
+                                        {
+                                            "type": "redaction_item",
+                                            "iteration": current_iter_for_ui(),
+                                            "item": redaction,
+                                            "index": idx,
+                                            "total": len(redactions),
+                                        }
+                                    )
+                                    await asyncio.sleep(0.02)
+
+                                yield sse(
+                                    {
+                                        "type": "redaction_complete",
+                                        "iteration": current_iter_for_ui(),
+                                        "count": len(redactions),
+                                        "redacted_text": result_json.get("redacted_text", "")[:200],
+                                    }
+                                )
+                                await asyncio.sleep(0.05)
+                                continue
+
+                            yield sse(
+                                {
+                                    "type": "tool_result",
+                                    "iteration": current_iter_for_ui(),
+                                    "tool_name": tool_name,
+                                    "result": content[:300],
+                                }
+                            )
+                            await asyncio.sleep(0.05)
+                            continue
+
+                    # ----------------------------
+                    # Rewrite node (robust to node name)
+                    # ----------------------------
+                    email_draft = payload.get("email_draft")
+                    if isinstance(email_draft, str) and email_draft:
+                        print(f"[SSE] Rewrite node ({node_name}) - new draft preview: {email_draft[:80]}...")
+                        yield sse({"type": "rewriting", "iteration": current_iter_for_ui()})
+                        await asyncio.sleep(0.05)
+                        yield sse(
+                            {
+                                "type": "rewrite_complete",
+                                "preview": email_draft[:300],
+                                "full_text": email_draft,
+                                "iteration": current_iter_for_ui(),
+                            }
+                        )
+                        await asyncio.sleep(0.05)
+                        continue
 
         except Exception as e:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            yield sse({"type": "error", "message": str(e)})
 
-        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        yield sse({"type": "done"})
 
     return StreamingResponse(
         generate_events(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
         }
     )
 
@@ -337,6 +523,7 @@ async def api_run_agent_sync(request: AgentRunRequest):
         "action": None,
         "final": None,
         "iteration": 0,
+        "step": 0,
     }
     
     iterations = []
