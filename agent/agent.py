@@ -30,7 +30,8 @@ if not OPENROUTER_API_KEY:
     raise RuntimeError("Missing OPENROUTER_API_KEY env var")
 
 MODEL = os.environ.get("OPENROUTER_MODEL", "openai/gpt-4o-mini")
-MAX_ITERATIONS = 5  # Safety limit to prevent infinite loops
+MAX_ITERATIONS = 5  # Max compliance check cycles
+MAX_STEPS = 30  # Safety limit to prevent infinite tool loops
 
 llm = ChatOpenAI(
     model=MODEL,
@@ -81,7 +82,8 @@ Available tools:
 3. redact_pii(text: str)
    - Automatically redacts PII (emails, phones, SSN, etc.) from text
    - Returns: {"redacted_text": str, "redactions_made": [...], "summary": str}
-   - Use this when email contains PII that needs to be removed
+   - NOTE: Does NOT redact recipient names in greetings (e.g., "Dear Mr. Smith" stays intact)
+   - Use this for OTHER people's PII mentioned in the email body
 """
 
 # -----------------------
@@ -93,7 +95,8 @@ class AgentState(TypedDict):
     history: List[Dict[str, str]]  # Conversation/tool history
     action: Optional[Dict[str, Any]]  # Last action chosen
     final: Optional[str]  # Final compliant email
-    iteration: int  # Track iterations for safety
+    iteration: int  # Compliance check cycle counter
+    step: int  # Total think steps (safety)
 
 # -----------------------
 # System Prompt
@@ -142,6 +145,15 @@ Rules:
 - Use "final" type ONLY when compliance check passes
 - If the email is already compliant, return it unchanged with "final" type
 - Keep JSON strictly valid (no extra text outside the JSON)
+
+IMPORTANT - What to preserve vs. remove:
+- KEEP the recipient's name in greetings (e.g., "Dear Mr. John Smith" - this is who you're writing TO)
+- REMOVE/REDACT other people's PII mentioned in the body (e.g., "Account holder: Mr. James Wilson")
+- REMOVE confidentiality markers like "INTERNAL ONLY", "CONFIDENTIAL"
+- REMOVE internal system references (Jira, Confluence, Slack channels, project codenames)
+- ADD unsubscribe link for marketing/promotional emails
+- SOFTEN guarantee language ("guaranteed" → "we aim to")
+- ADD appropriate disclaimers for financial/legal advice
 """
 
 # -----------------------
@@ -186,11 +198,11 @@ def think_node(state: AgentState) -> Dict[str, Any]:
     """LLM decides what to do next: tool call or final."""
     
     # Check iteration limit
-    if state["iteration"] >= MAX_ITERATIONS:
+    if state["iteration"] >= MAX_ITERATIONS or state["step"] >= MAX_STEPS:
         return {
             "action": {
                 "type": "final",
-                "thought_summary": f"Reached maximum iterations ({MAX_ITERATIONS}). Returning best effort.",
+                "thought_summary": f"Reached maximum limits (cycles={MAX_ITERATIONS}, steps={MAX_STEPS}). Returning best effort.",
                 "answer": state["email_draft"]
             }
         }
@@ -214,7 +226,12 @@ def think_node(state: AgentState) -> Dict[str, Any]:
             "answer": f"ERROR: Model returned non-JSON:\n{raw}",
         }
 
-    return {"action": action, "iteration": state["iteration"] + 1}
+    next_step = state["step"] + 1
+    next_cycle = state["iteration"]
+    if isinstance(action, dict) and action.get("type") == "tool" and action.get("name") == "check_compliance":
+        next_cycle += 1
+
+    return {"action": action, "iteration": next_cycle, "step": next_step}
 
 def tool_node(state: AgentState) -> Dict[str, Any]:
     """Execute the selected tool and append result to history."""
@@ -405,6 +422,7 @@ def run(email_text: str, goal: str = "Review this email for compliance issues an
         "action": None,
         "final": None,
         "iteration": 0,
+        "step": 0,
     }
 
     print("\n" + "="*60)

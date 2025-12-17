@@ -1,5 +1,6 @@
 /**
  * Outbound Email Guard - Main Application
+ * Progressive streaming UI for a natural, agentic experience
  */
 
 class EmailGuard {
@@ -7,6 +8,10 @@ class EmailGuard {
         this.maxIterations = 5;
         this.currentIteration = 0;
         this.history = [];
+        this.issues = [];
+        this.policies = [];
+        this.currentEmailDraft = '';
+        this.issueHistory = []; // Track issue counts per iteration: [7, 3, 0]
 
         // DOM Elements
         this.elements = {
@@ -35,40 +40,58 @@ class EmailGuard {
             useBtn: document.getElementById('use-btn'),
             historySection: document.getElementById('history-section'),
             historyList: document.getElementById('history-list'),
+            // Progress panel elements
+            agentProgress: document.getElementById('agent-progress'),
+            currentIter: document.getElementById('current-iter'),
+            progressBar: document.getElementById('progress-bar'),
+            progressStatus: document.getElementById('progress-status'),
+            progressIssues: document.getElementById('progress-issues'),
         };
 
         this.init();
     }
 
     init() {
-        // Event Listeners
         this.elements.checkBtn.addEventListener('click', () => this.startComplianceCheck());
         this.elements.copyBtn.addEventListener('click', () => this.copyToClipboard());
         this.elements.useBtn.addEventListener('click', () => this.useCompliantVersion());
-
-        // Demo data (optional - remove in production)
         this.loadDemoData();
+        this.checkApiHealth();
+    }
+
+    async checkApiHealth() {
+        try {
+            await API.healthCheck();
+            console.log('API server is healthy');
+        } catch (e) {
+            console.warn('API server not available, some features may not work');
+        }
     }
 
     loadDemoData() {
-        // Pre-fill with demo data for testing
-        this.elements.emailTo.value = 'client@example.com';
-        this.elements.emailSubject.value = 'Your Account Update - Act Now!';
-        this.elements.emailBody.value = `Dear Customer,
+        this.elements.emailTo.value = 'customer@example.com';
+        this.elements.emailSubject.value = 'Exclusive Investment Opportunity - Act Now!';
+        this.elements.emailBody.value = `Subject: Special Offer for Mr. James Wilson
 
-Congratulations! You've been selected as a winner in our promotion.
+CONFIDENTIAL
+
+Dear Mr. James Wilson,
+
+We guarantee you'll love our new service! As a valued customer, we're offering you an exclusive deal.
 
 Your account details:
-- SSN: 123-45-6789
-- Card: 4111-2222-3333-4444
-- Phone: 555-123-4567
+- Email: james.wilson@personalmail.com  
+- Phone: 555-987-6543
+- Account ID: Based on SSN 321-54-9876
 
-This is a limited time offer - act now to claim your free money!
+For a limited time, we're offering 30% off on all services. We recommend you sign up today before this offer expires!
 
-This information is confidential and internal only.
+As discussed internally on our Jira board, Project Moonshot is launching soon and you'll be among the first to know.
+
+Our advice: Act now to secure your spot!
 
 Best regards,
-Sales Team`;
+Marketing Team`;
     }
 
     async startComplianceCheck() {
@@ -76,110 +99,355 @@ Sales Team`;
         this.resetUI();
         this.currentIteration = 0;
         this.history = [];
-
-        const emailText = this.elements.emailBody.value;
+        this.issues = [];
+        this.policies = [];
+        this.currentEmailDraft = this.elements.emailBody.value;
+        this.issueHistory = [];
 
         this.showSection('statusSection');
-        this.addStatus('Starting compliance check...', 'active');
+        this.updateProgressPanel(0, 'Starting...', null);
+        await this.addStatusAnimated('Starting compliance review...', 'active');
 
-        await this.complianceLoop(emailText);
+        await this.runAgentWithStreaming(this.currentEmailDraft);
     }
 
-    async complianceLoop(emailText) {
-        this.currentIteration++;
+    /**
+     * Run agent with SSE streaming - handles granular progressive events
+     */
+    async runAgentWithStreaming(emailText) {
+        let finalEmail = emailText;
 
-        if (this.currentIteration > this.maxIterations) {
-            this.addStatus('Maximum iterations reached. Manual review required.', 'error');
-            this.showFinalResult(emailText, false);
-            this.setLoading(false);
+        try {
+            // The API now awaits each event callback, so events are processed in order
+            await API.runAgentStream(emailText, async (event) => {
+                console.log('SSE Event:', event.type, event);
+
+                // Handle the event and update UI
+                await this.handleProgressiveEvent(event, (email) => {
+                    finalEmail = email;
+                });
+            });
+
+            // Final check and display
+            const finalCheck = await API.checkCompliance(finalEmail);
+            this.showFinalResult(finalEmail, finalCheck.pass, this.currentIteration);
+
+        } catch (error) {
+            console.error('Agent error:', error);
+            await this.addStatusAnimated(`Error: ${error.message}`, 'error');
+        }
+
+        this.setLoading(false);
+    }
+
+    /**
+     * Handle each progressive SSE event with appropriate animations
+     */
+    async handleProgressiveEvent(event, onComplete) {
+        // Keep iteration tracking in sync even if some events arrive without `iteration_start`
+        if (event && event.iteration !== undefined && event.iteration !== null) {
+            const iter = Number(event.iteration);
+            if (Number.isFinite(iter)) {
+                this.currentIteration = iter;
+            }
+        }
+
+        switch (event.type) {
+            case 'start':
+                await this.addStatusAnimated('Processing email...', 'completed');
+                break;
+
+            case 'iteration_start':
+                this.updateProgressPanel(event.iteration, 'Analyzing...', null);
+                // Add a persistent iteration marker, then a separate active status that can be updated
+                await this.addStatusAnimated(`--- Iteration ${event.iteration} ---`, 'completed', 'iteration-marker');
+                await this.addStatusAnimated('Analyzing email...', 'active');
+                // Clear previous issues for new iteration (fresh check)
+                this.issues = [];
+                this.elements.issuesList.innerHTML = '';
+                // Clear policies for new iteration
+                this.policies = [];
+                this.elements.policyTabs.innerHTML = '';
+                this.elements.policyContent.textContent = '';
+                this.hideSection('policySection');
+                // Add to history
+                this.addHistoryEntry(event.iteration, 'starting', 'Starting analysis...');
+                break;
+
+            case 'thinking':
+                await this.updateLastStatusAnimated(`Thinking: ${event.thought}`, 'active');
+                break;
+
+            case 'tool_selected':
+                const toolEmoji = this.getToolEmoji(event.tool_name);
+                if (event.tool_name === 'check_compliance') {
+                    this.updateProgressPanel(this.currentIteration, 'Checking compliance...', null, 'checking');
+                }
+                await this.addStatusAnimated(`${toolEmoji} Using ${this.formatToolName(event.tool_name)}...`, 'active');
+                break;
+
+            case 'tool_executing':
+                await this.addStatusAnimated('Executing...', 'active', 'pulse');
+                break;
+
+            case 'compliance_check_started':
+                await this.updateLastStatusAnimated('Scanning for compliance issues...', 'active');
+                // Prepare issues section (but keep it empty)
+                this.showSection('issuesSection');
+                this.elements.issuesList.innerHTML = '';
+                this.elements.issuesCount.textContent = '...';
+                break;
+
+            case 'issues_found':
+                await this.updateLastStatusAnimated(`Found ${event.total_count} potential issue(s)`, 'warning');
+                this.elements.issuesCount.textContent = event.total_count;
+                this.elements.issuesCount.className = 'badge';
+                this.elements.issuesIcon.textContent = '🔍';
+                break;
+
+            case 'issue':
+                // Add issue progressively with animation
+                await this.addIssueAnimated(event.issue, event.index, event.total);
+                break;
+
+            case 'compliance_result':
+                const statusText = event.pass
+                    ? 'Compliance check PASSED'
+                    : `Compliance check: ${event.issues_count} issue(s) to fix`;
+                const statusClass = event.pass ? 'completed' : 'warning';
+                await this.addStatusAnimated(statusText, statusClass);
+
+                // Track issues for progress panel
+                this.issueHistory.push(event.issues_count);
+                const progressStatusText = event.pass ? 'Passed!' : `Found ${event.issues_count} issues`;
+                const progressStatusClass = event.pass ? 'complete' : 'failed';
+                this.updateProgressPanel(this.currentIteration, progressStatusText, event.issues_count, progressStatusClass);
+
+                // Update history entry
+                this.updateHistoryEntry(this.currentIteration,
+                    event.pass ? 'pass' : 'issues',
+                    event.pass ? 'Passed all checks' : `${event.issues_count} issue(s) found`
+                );
+
+                // Load and display relevant policies for this iteration when it fails
+                if (!event.pass && this.issues.length > 0) {
+                    await this.addStatusAnimated('Loading relevant policies...', 'active');
+                    await this.loadPoliciesForCurrentIssues();
+                    await this.updateLastStatusAnimated('Relevant policies loaded', 'completed');
+                }
+                break;
+
+            case 'policy_loaded':
+                await this.addStatusAnimated('Policy reference loaded', 'completed');
+                // Fetch and display the policy progressively
+                if (this.policies.length === 0) {
+                    await this.loadPoliciesForCurrentIssues();
+                }
+                break;
+
+            case 'feedback':
+                if (event.text) {
+                    await this.addStatusAnimated(`Feedback: ${event.text}`, 'warning');
+                }
+                break;
+
+            case 'redaction_started':
+                await this.addStatusAnimated('Redacting sensitive information...', 'active');
+                break;
+
+            case 'redaction_item':
+                // Could show each redaction but might be too verbose
+                break;
+
+            case 'redaction_complete':
+                await this.updateLastStatusAnimated(`Redacted ${event.count} sensitive item(s)`, 'completed');
+                break;
+
+            case 'rewrite_start':
+                await this.addStatusAnimated('Preparing to rewrite email...', 'active');
+                break;
+
+            case 'rewriting':
+                this.updateProgressPanel(this.currentIteration, 'Rewriting email...', null, 'rewriting');
+                await this.updateLastStatusAnimated('Rewriting email to fix issues...', 'active');
+                break;
+
+            case 'rewrite_complete':
+                this.currentEmailDraft = event.full_text;
+                await this.addStatusAnimated('Email rewritten successfully', 'completed');
+                this.updateHistoryEntry(this.currentIteration, 'rewrite', 'Email revised');
+
+                // Add new history entry showing the rewrite
+                this.addHistoryEntry(this.currentIteration, 'rewrite', event.preview);
+                break;
+
+            case 'finalizing':
+                await this.addStatusAnimated('Running final compliance check...', 'active');
+                break;
+
+            case 'final_check':
+                await this.addStatusAnimated('Verifying final email...', 'active');
+                break;
+
+            case 'complete':
+                if (event.final_email) {
+                    onComplete(event.final_email);
+                }
+                if (event.iteration !== undefined && event.iteration !== null) {
+                    this.currentIteration = Number(event.iteration);
+                }
+                this.updateProgressPanel(this.currentIteration, 'Complete!', 0, 'complete');
+                await this.addStatusAnimated(`Review complete! (${this.currentIteration} iteration${this.currentIteration > 1 ? 's' : ''})`, 'completed');
+                break;
+
+            case 'error':
+                await this.addStatusAnimated(`Error: ${event.message}`, 'error');
+                break;
+
+            case 'done':
+                // Stream finished
+                break;
+
+            default:
+                console.log('Unknown event type:', event.type, event);
+        }
+    }
+
+    /**
+     * Update the progress panel with current iteration state
+     */
+    updateProgressPanel(iteration, status, issueCount, statusClass = '') {
+        // Update iteration number
+        this.elements.currentIter.textContent = String(iteration ?? 1);
+
+        // Update progress bar (percentage based on iteration)
+        const percentage = Math.min((iteration / this.maxIterations) * 100, 100);
+        this.elements.progressBar.style.width = `${percentage}%`;
+
+        // Update status text and class
+        this.elements.progressStatus.textContent = status;
+        this.elements.progressStatus.className = `progress-status ${statusClass}`;
+
+        // Update issue history trail
+        this.renderIssueTrail();
+    }
+
+    /**
+     * Render the issue count trail (e.g., "7 → 3 → 0")
+     */
+    renderIssueTrail() {
+        if (this.issueHistory.length === 0) {
+            this.elements.progressIssues.textContent = '-';
             return;
         }
 
-        // Step 1: Check compliance
-        this.updateLastStatus(`Iteration ${this.currentIteration}: Checking compliance...`, 'active');
-        await this.delay(500);
+        const trailHtml = this.issueHistory.map((count, idx) => {
+            const isLast = idx === this.issueHistory.length - 1;
+            const colorClass = count === 0 ? 'count-pass' : 'count-fail';
+            return `<span class="${colorClass}">${count}</span>`;
+        }).join('<span class="arrow">→</span>');
 
-        const complianceResult = await API.checkCompliance(emailText);
-
-        // Add to history
-        this.history.push({
-            iteration: this.currentIteration,
-            text: emailText,
-            issues: complianceResult.issues,
-            pass: complianceResult.pass
-        });
-
-        this.updateHistory();
-
-        if (complianceResult.pass && complianceResult.issues.length === 0) {
-            // All clear!
-            this.addStatus('Compliance check passed!', 'completed');
-            this.showFinalResult(emailText, true);
-            this.setLoading(false);
-            return;
-        }
-
-        // Show issues
-        this.showIssues(complianceResult.issues);
-        this.addStatus(`Found ${complianceResult.issues.length} issue(s)`, 'completed');
-
-        // Step 2: Fetch relevant policies
-        const categories = [...new Set(complianceResult.issues.map(i => i.category))];
-        this.addStatus('Fetching relevant policies...', 'active');
-        await this.delay(300);
-
-        const policies = await Promise.all(categories.map(cat => API.getPolicy(cat)));
-        this.showPolicies(policies);
-        this.updateLastStatus(`Loaded ${policies.length} policy document(s)`, 'completed');
-
-        // Step 3: Rewrite email
-        this.addStatus('Rewriting email for compliance...', 'active');
-        await this.delay(500);
-
-        const rewriteResult = await API.rewriteEmail(emailText, complianceResult.issues);
-        this.updateLastStatus(`Applied ${rewriteResult.changes.length} change(s)`, 'completed');
-
-        // Step 4: Redact PII
-        this.addStatus('Redacting sensitive information...', 'active');
-        await this.delay(300);
-
-        const redactResult = await API.redactPII(rewriteResult.rewritten);
-        this.updateLastStatus(`Redacted ${redactResult.redactions.length} item(s)`, 'completed');
-
-        // Step 5: Re-check (recursive loop)
-        this.addStatus('Re-checking compliance...', 'active');
-        await this.delay(300);
-
-        await this.complianceLoop(redactResult.redacted);
+        this.elements.progressIssues.innerHTML = trailHtml;
     }
 
-    showIssues(issues) {
-        this.showSection('issuesSection');
+    /**
+     * Add a status item with typing animation
+     */
+    async addStatusAnimated(message, state = 'pending', extraClass = '') {
+        const statusItem = document.createElement('div');
+        statusItem.className = `status-item ${state} ${extraClass} fade-in`;
+        statusItem.innerHTML = `
+            <span class="status-message"></span>
+            <span class="status-time">${this.getTimeString()}</span>
+        `;
+        this.elements.statusTimeline.appendChild(statusItem);
+        statusItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
-        const criticalCount = issues.filter(i => i.severity === 'critical').length;
-        const totalCount = issues.length;
+        // Typing effect
+        const messageEl = statusItem.querySelector('.status-message');
+        await this.typeText(messageEl, message, 15);
 
-        this.elements.issuesCount.textContent = totalCount;
-        this.elements.issuesCount.className = criticalCount > 0 ? 'badge' : 'badge success';
+        return statusItem;
+    }
+
+    /**
+     * Update the last status item with animation
+     */
+    async updateLastStatusAnimated(message, state) {
+        const lastItem = this.elements.statusTimeline.lastElementChild;
+        if (lastItem) {
+            lastItem.className = `status-item ${state}`;
+            const messageEl = lastItem.querySelector('.status-message');
+            messageEl.textContent = '';
+            await this.typeText(messageEl, message, 10);
+        }
+    }
+
+    /**
+     * Type text character by character
+     */
+    async typeText(element, text, delay = 20) {
+        for (let i = 0; i < text.length; i++) {
+            element.textContent += text[i];
+            if (delay > 0 && i % 3 === 0) { // Type 3 chars at a time for speed
+                await this.delay(delay);
+            }
+        }
+    }
+
+    /**
+     * Add an issue with slide-in animation
+     */
+    async addIssueAnimated(issue, index, total) {
+        this.issues.push(issue);
+
+        const issueItem = document.createElement('li');
+        issueItem.className = `issue-item ${issue.severity === 'critical' ? 'critical' : ''} slide-in`;
+        issueItem.style.animationDelay = `${index * 0.05}s`;
+
+        issueItem.innerHTML = `
+            <span class="issue-icon">${issue.severity === 'critical' ? '🚨' : '⚠️'}</span>
+            <div class="issue-content">
+                <div class="issue-title">${this.escapeHtml(issue.title || issue.type)}</div>
+                <div class="issue-description">${this.escapeHtml(issue.description)}</div>
+                <span class="issue-category">${this.escapeHtml(issue.category || issue.type)}</span>
+            </div>
+        `;
+
+        this.elements.issuesList.appendChild(issueItem);
+
+        // Update counter
+        this.elements.issuesCount.textContent = this.issues.length;
+        const criticalCount = this.issues.filter(i => i.severity === 'critical').length;
         this.elements.issuesIcon.textContent = criticalCount > 0 ? '🚨' : '⚠️';
 
-        this.elements.issuesList.innerHTML = issues.map(issue => `
-            <li class="issue-item ${issue.severity === 'critical' ? 'critical' : ''}">
-                <span class="issue-icon">${issue.severity === 'critical' ? '🚨' : '⚠️'}</span>
-                <div class="issue-content">
-                    <div class="issue-title">${this.escapeHtml(issue.title)}</div>
-                    <div class="issue-description">${this.escapeHtml(issue.description)}</div>
-                    <span class="issue-category">${this.escapeHtml(issue.category)}</span>
-                </div>
-            </li>
-        `).join('');
+        // Small delay for staggered effect
+        await this.delay(50);
     }
 
-    showPolicies(policies) {
+    /**
+     * Load policies progressively for found issues
+     */
+    async loadPoliciesForCurrentIssues() {
+        if (this.issues.length === 0) return;
+
+        const categories = [...new Set(this.issues.map(i => i.category))];
         this.showSection('policySection');
 
-        // Create tabs
-        this.elements.policyTabs.innerHTML = policies.map((policy, index) => `
+        for (const category of categories) {
+            try {
+                const policy = await API.getPolicy(category);
+                this.policies.push(policy);
+                this.updatePolicyTabs();
+                await this.delay(100);
+            } catch (e) {
+                console.error('Failed to load policy:', category, e);
+            }
+        }
+    }
+
+    updatePolicyTabs() {
+        this.elements.policyTabs.innerHTML = this.policies.map((policy, index) => `
             <button class="policy-tab ${index === 0 ? 'active' : ''}"
                     data-category="${policy.category}"
                     onclick="app.selectPolicy('${policy.category}')">
@@ -187,92 +455,112 @@ Sales Team`;
             </button>
         `).join('');
 
-        // Store policies for tab switching
-        this.policies = policies;
-
-        // Show first policy
-        if (policies.length > 0) {
-            this.elements.policyContent.textContent = policies[0].content;
+        if (this.policies.length > 0) {
+            this.elements.policyContent.textContent = this.policies[0].content;
         }
     }
 
     selectPolicy(category) {
-        // Update active tab
         document.querySelectorAll('.policy-tab').forEach(tab => {
             tab.classList.toggle('active', tab.dataset.category === category);
         });
 
-        // Show policy content
         const policy = this.policies.find(p => p.category === category);
         if (policy) {
             this.elements.policyContent.textContent = policy.content;
         }
     }
 
-    showFinalResult(emailText, passed) {
+    /**
+     * Add history entry progressively
+     */
+    addHistoryEntry(iteration, status, text) {
+        this.showSection('historySection');
+
+        const existingEntry = this.elements.historyList.querySelector(`[data-iteration="${iteration}"]`);
+        if (existingEntry) {
+            // Update existing entry
+            const badge = existingEntry.querySelector('.history-item-badge');
+            const preview = existingEntry.querySelector('.history-item-preview');
+            badge.className = `history-item-badge ${status}`;
+            badge.textContent = this.getStatusLabel(status);
+            preview.textContent = text.substring(0, 100) + (text.length > 100 ? '...' : '');
+            return;
+        }
+
+        const historyItem = document.createElement('div');
+        historyItem.className = 'history-item fade-in';
+        historyItem.dataset.iteration = iteration;
+        historyItem.innerHTML = `
+            <div class="history-item-header">
+                <span class="history-item-title">Iteration ${iteration}</span>
+                <span class="history-item-badge ${status}">${this.getStatusLabel(status)}</span>
+            </div>
+            <div class="history-item-preview">${this.escapeHtml(text.substring(0, 100))}${text.length > 100 ? '...' : ''}</div>
+        `;
+
+        this.elements.historyList.appendChild(historyItem);
+    }
+
+    updateHistoryEntry(iteration, status, text) {
+        const entry = this.elements.historyList.querySelector(`[data-iteration="${iteration}"]`);
+        if (entry) {
+            const badge = entry.querySelector('.history-item-badge');
+            const preview = entry.querySelector('.history-item-preview');
+            badge.className = `history-item-badge ${status}`;
+            badge.textContent = this.getStatusLabel(status);
+            if (text) {
+                preview.textContent = text.substring(0, 100) + (text.length > 100 ? '...' : '');
+            }
+        }
+    }
+
+    getStatusLabel(status) {
+        const labels = {
+            'starting': 'Starting...',
+            'issues': 'Issues Found',
+            'pass': 'Passed',
+            'rewrite': 'Rewritten',
+            'fail': 'Failed'
+        };
+        return labels[status] || status;
+    }
+
+    showFinalResult(emailText, passed, finalIteration = null) {
         this.showSection('resultSection');
 
-        this.elements.resultTitle.textContent = passed ? 'Compliant Email' : 'Review Required';
-        this.elements.resultBadge.textContent = passed ? 'Passed' : 'Needs Review';
-        this.elements.resultBadge.className = `status-badge ${passed ? 'passed' : 'failed'}`;
+        const iterInfo = (finalIteration !== null && finalIteration !== undefined)
+            ? ` (Iteration ${finalIteration})`
+            : '';
+
+        if (passed) {
+            this.elements.resultTitle.textContent = `Compliant Email${iterInfo}`;
+            this.elements.resultBadge.textContent = 'PASSED';
+            this.elements.resultBadge.className = 'status-badge passed';
+        } else {
+            this.elements.resultTitle.textContent = `Best Effort${iterInfo}`;
+            this.elements.resultBadge.textContent = 'NEEDS REVIEW';
+            this.elements.resultBadge.className = 'status-badge failed';
+        }
 
         this.elements.resultTo.value = this.elements.emailTo.value;
         this.elements.resultSubject.value = this.elements.emailSubject.value;
         this.elements.resultBody.value = emailText;
 
-        // Update issues section to show success
         if (passed) {
+            this.showSection('issuesSection');
             this.elements.issuesIcon.textContent = '✅';
-            this.elements.issuesSection.querySelector('h2').innerHTML = `
-                <span id="issues-icon">✅</span>
-                No Compliance Issues
-            `;
+            this.elements.issuesCount.textContent = '0';
+            this.elements.issuesCount.className = 'badge success';
             this.elements.issuesList.innerHTML = `
                 <li class="issue-item" style="border-left-color: var(--success);">
                     <span class="issue-icon">✅</span>
                     <div class="issue-content">
                         <div class="issue-title">All Clear</div>
-                        <div class="issue-description">Email passed all compliance checks and is safe to send.</div>
+                        <div class="issue-description">Email passed all compliance checks after ${this.currentIteration} iteration(s) and is safe to send.</div>
                     </div>
                 </li>
             `;
-        }
-    }
-
-    updateHistory() {
-        this.showSection('historySection');
-
-        this.elements.historyList.innerHTML = this.history.map((item, index) => `
-            <div class="history-item">
-                <div class="history-item-header">
-                    <span class="history-item-title">Iteration ${item.iteration}</span>
-                    <span class="history-item-badge ${item.pass ? 'pass' : 'fail'}">
-                        ${item.issues.length} issue(s)
-                    </span>
-                </div>
-                <div class="history-item-preview">${this.escapeHtml(item.text.substring(0, 100))}...</div>
-            </div>
-        `).join('');
-    }
-
-    addStatus(message, state = 'pending') {
-        const statusItem = document.createElement('div');
-        statusItem.className = `status-item ${state}`;
-        statusItem.innerHTML = `
-            <span class="status-message">${this.escapeHtml(message)}</span>
-            <span class="status-time">${this.getTimeString()}</span>
-        `;
-        this.elements.statusTimeline.appendChild(statusItem);
-
-        // Scroll to latest status
-        statusItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-
-    updateLastStatus(message, state) {
-        const lastItem = this.elements.statusTimeline.lastElementChild;
-        if (lastItem) {
-            lastItem.className = `status-item ${state}`;
-            lastItem.querySelector('.status-message').textContent = message;
         }
     }
 
@@ -299,10 +587,8 @@ ${this.elements.resultBody.value}`;
         this.elements.emailSubject.value = this.elements.resultSubject.value;
         this.elements.emailBody.value = this.elements.resultBody.value;
 
-        // Scroll to top
         window.scrollTo({ top: 0, behavior: 'smooth' });
 
-        // Flash the email input section
         const emailSection = document.querySelector('.email-input-section');
         emailSection.style.boxShadow = '0 0 0 3px var(--success)';
         setTimeout(() => {
@@ -319,18 +605,48 @@ ${this.elements.resultBody.value}`;
     }
 
     resetUI() {
-        // Hide all result sections
         ['statusSection', 'issuesSection', 'policySection', 'resultSection', 'historySection']
             .forEach(id => this.hideSection(id));
 
-        // Clear status timeline
         this.elements.statusTimeline.innerHTML = '';
+        this.elements.issuesIcon.textContent = '⚠️';
+        this.elements.issuesCount.textContent = '0';
+        this.elements.issuesCount.className = 'badge';
+        this.elements.issuesList.innerHTML = '';
+        this.elements.historyList.innerHTML = '';
+        this.elements.policyTabs.innerHTML = '';
+        this.elements.policyContent.textContent = '';
+
+        // Reset progress panel
+        this.elements.currentIter.textContent = '1';
+        this.elements.progressBar.style.width = '0%';
+        this.elements.progressStatus.textContent = 'Starting...';
+        this.elements.progressStatus.className = 'progress-status';
+        this.elements.progressIssues.textContent = '-';
     }
 
     setLoading(loading) {
         this.elements.checkBtn.disabled = loading;
         this.elements.btnText.classList.toggle('hidden', loading);
         this.elements.btnLoader.classList.toggle('hidden', !loading);
+    }
+
+    getToolEmoji(toolName) {
+        const emojis = {
+            'check_compliance': '🔍',
+            'get_policy': '📋',
+            'redact_pii': '🔒'
+        };
+        return emojis[toolName] || '🔧';
+    }
+
+    formatToolName(toolName) {
+        const names = {
+            'check_compliance': 'Compliance Checker',
+            'get_policy': 'Policy Lookup',
+            'redact_pii': 'PII Redactor'
+        };
+        return names[toolName] || toolName;
     }
 
     getTimeString() {
@@ -343,7 +659,7 @@ ${this.elements.resultBody.value}`;
 
     escapeHtml(text) {
         const div = document.createElement('div');
-        div.textContent = text;
+        div.textContent = text || '';
         return div.innerHTML;
     }
 

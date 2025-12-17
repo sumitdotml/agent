@@ -1,7 +1,7 @@
 [project]
-name = "building-an-agent"
+name = "outbound-email-guard"
 version = "0.1.0"
-description = "Add your description here"
+description = "reviews outbound emails for compliance issues and iteratively rewrites them until they pass"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -10,4 +10,7 @@ dependencies = [
     "langchain-openai>=1.1.4",
     "langgraph>=1.0.5",
     "requests>=2.32.5",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.32.0",
+    "python-multipart>=0.0.12",
 ]
