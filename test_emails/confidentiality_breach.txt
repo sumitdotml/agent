@@ -1,0 +1,18 @@
+Subject: Project Update
+
+Hi External Partner,
+
+INTERNAL ONLY - Please review
+
+I wanted to give you an update on Project Phoenix. As discussed in our Jira ticket PROJ-1234, we're making good progress.
+
+The team discussed this in our internal Slack channel #project-phoenix-internal and here's what we decided:
+
+1. Phase 1 is complete
+2. We're targeting Q2 for the public launch
+3. Internal metrics show 40% improvement over the previous version
+
+You can find more details on our Confluence page. Let me know if you need access to the SharePoint folder with the latest docs.
+
+Best,
+Product Team
