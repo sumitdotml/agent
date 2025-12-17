@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Outbound Email Guard</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Outbound Email Guard</h1>
+            <p class="subtitle">Compliance Agent for Email Review</p>
+        </header>
+
+        <main>
+            <!-- Email Input Section -->
+            <section class="card email-input-section">
+                <h2>Draft Email</h2>
+                <div class="form-group">
+                    <label for="email-to">To:</label>
+                    <input type="email" id="email-to" placeholder="recipient@example.com">
+                </div>
+                <div class="form-group">
+                    <label for="email-subject">Subject:</label>
+                    <input type="text" id="email-subject" placeholder="Email subject">
+                </div>
+                <div class="form-group">
+                    <label for="email-body">Body:</label>
+                    <textarea id="email-body" rows="10" placeholder="Write your email here..."></textarea>
+                </div>
+                <button id="check-btn" class="btn btn-primary">
+                    <span class="btn-text">Check Compliance</span>
+                    <span class="btn-loader hidden"></span>
+                </button>
+            </section>
+
+            <!-- Status Section -->
+            <section class="card status-section hidden" id="status-section">
+                <h2>Processing Status</h2>
+                <div class="status-timeline" id="status-timeline">
+                    <!-- Status items will be added here -->
+                </div>
+            </section>
+
+            <!-- Issues Section -->
+            <section class="card issues-section hidden" id="issues-section">
+                <h2>
+                    <span id="issues-icon">⚠️</span>
+                    Compliance Issues
+                    <span class="badge" id="issues-count">0</span>
+                </h2>
+                <ul class="issues-list" id="issues-list">
+                    <!-- Issues will be listed here -->
+                </ul>
+            </section>
+
+            <!-- Policy Reference Section -->
+            <section class="card policy-section hidden" id="policy-section">
+                <h2>Relevant Policies</h2>
+                <div class="policy-tabs" id="policy-tabs">
+                    <!-- Policy tabs will be added here -->
+                </div>
+                <div class="policy-content" id="policy-content">
+                    <!-- Policy content will be shown here -->
+                </div>
+            </section>
+
+            <!-- Result Section -->
+            <section class="card result-section hidden" id="result-section">
+                <div class="result-header">
+                    <h2 id="result-title">Compliant Email</h2>
+                    <span class="status-badge" id="result-badge">Passed</span>
+                </div>
+                <div class="result-content">
+                    <div class="form-group">
+                        <label>To:</label>
+                        <input type="text" id="result-to" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label>Subject:</label>
+                        <input type="text" id="result-subject" readonly>
+                    </div>
+                    <div class="form-group">
+                        <label>Body:</label>
+                        <textarea id="result-body" rows="10" readonly></textarea>
+                    </div>
+                </div>
+                <div class="result-actions">
+                    <button class="btn btn-secondary" id="copy-btn">Copy to Clipboard</button>
+                    <button class="btn btn-primary" id="use-btn">Use This Version</button>
+                </div>
+            </section>
+
+            <!-- Iteration History -->
+            <section class="card history-section hidden" id="history-section">
+                <h2>Revision History</h2>
+                <div class="history-list" id="history-list">
+                    <!-- History items will be added here -->
+                </div>
+            </section>
+        </main>
+
+        <footer>
+            <p>Compliance Agent v1.0</p>
+        </footer>
+    </div>
+
+    <script src="api.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
