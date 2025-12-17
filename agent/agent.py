@@ -81,7 +81,8 @@ Available tools:
 3. redact_pii(text: str)
    - Automatically redacts PII (emails, phones, SSN, etc.) from text
    - Returns: {"redacted_text": str, "redactions_made": [...], "summary": str}
-   - Use this when email contains PII that needs to be removed
+   - NOTE: Does NOT redact recipient names in greetings (e.g., "Dear Mr. Smith" stays intact)
+   - Use this for OTHER people's PII mentioned in the email body
 """
 
 # -----------------------
@@ -142,6 +143,15 @@ Rules:
 - Use "final" type ONLY when compliance check passes
 - If the email is already compliant, return it unchanged with "final" type
 - Keep JSON strictly valid (no extra text outside the JSON)
+
+IMPORTANT - What to preserve vs. remove:
+- KEEP the recipient's name in greetings (e.g., "Dear Mr. John Smith" - this is who you're writing TO)
+- REMOVE/REDACT other people's PII mentioned in the body (e.g., "Account holder: Mr. James Wilson")
+- REMOVE confidentiality markers like "INTERNAL ONLY", "CONFIDENTIAL"
+- REMOVE internal system references (Jira, Confluence, Slack channels, project codenames)
+- ADD unsubscribe link for marketing/promotional emails
+- SOFTEN guarantee language ("guaranteed" → "we aim to")
+- ADD appropriate disclaimers for financial/legal advice
 """
 
 # -----------------------

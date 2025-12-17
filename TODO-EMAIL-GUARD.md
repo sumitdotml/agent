@@ -175,6 +175,24 @@ building-an-agent/
 
 ## How to Run
 
+### Web UI (Demo Mode) 🌐
+
+```bash
+# Start the web server
+uv run python server.py
+
+# Open in browser
+open http://localhost:8000
+```
+
+The web UI provides:
+- Live SSE streaming of agent execution
+- Visual timeline of compliance checks
+- Policy reference panel
+- Before/after email comparison
+
+### CLI Mode 🖥️
+
 ```bash
 # Run on a specific test email
 uv run python -m agent.agent test_emails/pii_violation.txt
@@ -185,6 +203,23 @@ uv run python -m agent.agent test_emails/clean_email.txt
 
 # Run with default demo email (PII example)
 uv run python -m agent.agent
+```
+
+### API Endpoints 🔌
+
+```bash
+# Check compliance
+curl -X POST http://localhost:8000/api/check-compliance \
+  -H "Content-Type: application/json" \
+  -d '{"email_text": "Your email here"}'
+
+# Get policy
+curl http://localhost:8000/api/policy/pii
+
+# Run full agent (sync)
+curl -X POST http://localhost:8000/api/run-agent-sync \
+  -H "Content-Type: application/json" \
+  -d '{"email_text": "Your email here"}'
 ```
 
 ---

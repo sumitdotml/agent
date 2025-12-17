@@ -38,6 +38,24 @@
             <!-- Status Section -->
             <section class="card status-section hidden" id="status-section">
                 <h2>Processing Status</h2>
+
+                <!-- Agent Progress Panel -->
+                <div class="agent-progress" id="agent-progress">
+                    <div class="progress-header">
+                        <span class="progress-title">Agent Progress</span>
+                        <span class="progress-iteration">Iteration <span id="current-iter">1</span>/5</span>
+                    </div>
+                    <div class="progress-bar-container">
+                        <div class="progress-bar" id="progress-bar"></div>
+                    </div>
+                    <div class="progress-details">
+                        <span class="progress-status" id="progress-status">Starting...</span>
+                        <span class="progress-divider">|</span>
+                        <span class="progress-issues-label">Issues:</span>
+                        <span class="progress-issues" id="progress-issues">-</span>
+                    </div>
+                </div>
+
                 <div class="status-timeline" id="status-timeline">
                     <!-- Status items will be added here -->
                 </div>

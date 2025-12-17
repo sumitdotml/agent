@@ -8,6 +8,9 @@ def redact_pii(text: str) -> Dict[str, str]:
     """
     Automatically redact PII from text.
     
+    IMPORTANT: Does NOT redact recipient information (names in greetings like "Dear Mr. X")
+    since you're writing TO that person - their name is appropriate to include.
+    
     Args:
         text: The text to redact
         
@@ -16,6 +19,12 @@ def redact_pii(text: str) -> Dict[str, str]:
     """
     redacted = text
     redactions = []
+    
+    # --- Identify recipient name in greeting (DO NOT redact) ---
+    # Common greeting patterns: "Dear Mr. X", "Hi Mr. X", "Hello Ms. X"
+    greeting_pattern = r'^(?:Dear|Hi|Hello|Hey)\s+(Mr\.|Ms\.|Mrs\.|Dr\.)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)'
+    greeting_match = re.search(greeting_pattern, text, re.MULTILINE)
+    recipient_name = greeting_match.group(0) if greeting_match else None
     
     # --- Email addresses ---
     email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
@@ -57,12 +66,25 @@ def redact_pii(text: str) -> Dict[str, str]:
         redacted = redacted.replace(original, f'[REDACTED_CC_****{last_four}]', 1)
         redactions.append(f"Credit Card: ****-****-****-{last_four}")
     
-    # --- Names (heuristic: Title Case names in certain contexts) ---
-    # This is intentionally conservative - only catches "Mr./Ms./Mrs./Dr. Name"
+    # --- Names with titles (but NOT in greetings - those are recipients) ---
+    # Only redact names that appear in contexts like "Account holder: Mr. X" or 
+    # "I reviewed the account for Mr. X" - NOT "Dear Mr. X"
     name_pattern = r'\b(Mr\.|Ms\.|Mrs\.|Dr\.)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b'
-    name_matches = re.finditer(name_pattern, redacted)
+    name_matches = list(re.finditer(name_pattern, redacted))
+    
     for match in name_matches:
         original = match.group(0)
+        
+        # Skip if this is the recipient name in the greeting
+        if recipient_name and original in recipient_name:
+            continue
+            
+        # Check if this appears right after a greeting word (also skip)
+        start_pos = match.start()
+        prefix = redacted[max(0, start_pos-10):start_pos].lower()
+        if any(g in prefix for g in ['dear ', 'hi ', 'hello ', 'hey ']):
+            continue
+        
         title = match.group(1)
         redacted = redacted.replace(original, f'{title} [REDACTED_NAME]', 1)
         redactions.append(f"Name with title: {original}")
